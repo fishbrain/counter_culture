@@ -200,7 +200,8 @@ module CounterCulture
           end
 
           joins_sql = "LEFT JOIN #{target_table} AS #{target_table_alias} "\
-            "ON #{source_table}.#{source_table_key} = #{target_table_alias}.#{target_table_key}"
+                      "ON #{source_table}.#{source_table_key} = #{target_table_alias}.#{target_table_key}"
+          joins_sql += " #{counter.join}" if counter.join
           # adds 'type' condition to JOIN clause if the current model is a
           # child in a Single Table Inheritance
           if reflect.active_record.column_names.include?('type') &&

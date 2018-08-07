@@ -1,6 +1,6 @@
 module CounterCulture
   class Counter
-    CONFIG_OPTIONS = [ :column_names, :counter_cache_name, :delta_column, :foreign_key_values, :touch, :delta_magnitude, :execute_after_commit ]
+    CONFIG_OPTIONS = [ :column_names, :counter_cache_name, :delta_column, :foreign_key_values, :touch, :delta_magnitude, :execute_after_commit, :join ]
     ACTIVE_RECORD_VERSION = Gem.loaded_specs["activerecord"].version
 
     attr_reader :model, :relation, *CONFIG_OPTIONS
@@ -12,6 +12,7 @@ module CounterCulture
       @counter_cache_name = options.fetch(:column_name, "#{model.name.tableize}_count")
       @column_names = options[:column_names]
       @delta_column = options[:delta_column]
+      @join = options[:join]
       @foreign_key_values = options[:foreign_key_values]
       @touch = options.fetch(:touch, false)
       @delta_magnitude = options[:delta_magnitude] || 1
