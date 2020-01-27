@@ -24,7 +24,10 @@ ActiveRecord::Schema.define(:version => 20120522160158) do
     t.integer  "review_approvals_count",      :default => 0, :null => false
     t.integer  "parent_id"
     t.integer  "children_count",      :default => 0, :null => false
-    t.integer  "soft_deletes_count",  :default => 0, :null => false
+    t.integer  "soft_delete_paranoia_count",  :default => 0, :null => false
+    t.integer  "soft_delete_paranoia_values_sum", :default => 0, :null => false
+    t.integer  "soft_delete_discards_count",  :default => 0, :null => false
+    t.integer  "soft_delete_discard_values_sum", :default => 0, :null => false
     t.datetime "created_at"
     t.datetime "updated_at"
   end
@@ -76,6 +79,7 @@ ActiveRecord::Schema.define(:version => 20120522160158) do
     t.integer  "custom_delta_count",         :default => 0, :null => false
     t.integer  "review_approvals_count",      :default => 0, :null => false
     t.string   "has_string_id_id"
+    t.integer  "has_non_pk_id_id"
     t.float    "review_value_sum",    :default => 0.0, :null => false
     t.datetime "created_at"
     t.datetime "updated_at"
@@ -89,8 +93,17 @@ ActiveRecord::Schema.define(:version => 20120522160158) do
     t.datetime "updated_at"
   end
 
+  create_table "has_non_pk_ids", :force => true, :id => false do |t|
+    t.integer  "id", :null => false
+    t.string   "something"
+    t.integer  "users_count",        :null => false, :default => 0
+    t.datetime "created_at"
+    t.datetime "updated_at"
+  end
+  add_index "has_non_pk_ids", :id, :unique => true
+
   create_table "has_string_ids", :force => true, :id => false do |t|
-    t.string   "id", :default => '', :null => false
+    t.string   "id", :default => '', :null => false, :limit => 191
     t.string   "something"
     t.integer  "users_count",        :null => false, :default => 0
     t.datetime "created_at"
@@ -176,9 +189,16 @@ ActiveRecord::Schema.define(:version => 20120522160158) do
     t.integer "monetary_value", :null => false
   end
 
-  create_table "soft_deletes", :force => true do |t|
+  create_table "soft_delete_paranoia", :force => true do |t|
     t.integer "company_id", :null => false
+    t.integer "value", :default => 0
     t.timestamp "deleted_at"
+  end
+
+  create_table "soft_delete_discards", :force => true do |t|
+    t.integer "company_id", :null => false
+    t.integer "value", :default => 0
+    t.timestamp "discarded_at"
   end
 
   #polymorphic
@@ -215,7 +235,7 @@ ActiveRecord::Schema.define(:version => 20120522160158) do
   end
 
   create_table :versions, :force => true do |t|
-    t.string   :item_type
+    t.string   :item_type, limit: 191
     t.integer  :item_id,   null: false
     t.string   :event,     null: false
     t.integer  :whodunnit
@@ -224,4 +244,12 @@ ActiveRecord::Schema.define(:version => 20120522160158) do
     t.datetime :created_at
   end
   add_index :versions, [:item_id, :item_type]
+
+  create_table :with_module_model1s, :force => true do |t|
+    t.integer :model2_id
+  end
+
+  create_table :with_module_model2s, :force => true do |t|
+    t.integer :model1s_count
+  end
 end

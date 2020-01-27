@@ -1,3 +1,118 @@
+## 2.2.4 (August 21, 2019)
+
+Bugfixes:
+  - Test and fix behavior in Rails 6.0.0 release (#268)
+
+## 2.2.3 (June 20, 2019)
+
+Improvements:
+  - Start testing against MySQL and PostgreSQL as well as sqlite3 (#257)
+
+Bugfixes:
+  - Fix edge cases in MySQL (#257)
+
+## 2.2.2 (May 5, 2019)
+
+Bugfixes:
+  - Don't fail reconciliation in PostgreSQL if the Rails-level primary key is not a DB primary key (#254)
+
+## 2.2.1 (April 17, 2019)
+
+Improvements:
+  - Improve logging when `verbose` is set (#256)
+
+## 2.2.0 (April 9, 2019)
+
+Improvements:
+  - Add `where` option to `counter_culture_fix_counts` (#250)
+  - Add `verbose` option to `counter_culture_fix_counts` (#251)
+
+Changes:
+  - Dropped support for Ruby 2.2
+  - Dropped support for Rails 3.2, 4.0 and 4.1
+
+## 2.1.4 (January 21, 2019)
+
+Improvements:
+  - Avoid instantiating model class during `counter_culture` call (#246)
+
+## 2.1.3 (January 19, 2019)
+
+Bugfixes:
+  - Don't update running total on soft-deleted records (#244)
+
+## 2.1.2 (December 7, 2018)
+
+Bugfixes:
+  - Properly handle `destroy` and `really_destroy` when using Paranoia (#239)
+
+## 2.1.1 (November 7, 2018)
+
+Bugfixes:
+  - Don't double-decrement when discarding and then hard-destroying a record (#237)
+
+## 2.1.0 (October 19, 2018)
+
+Bugfixes:
+  - Fix behavior with Models that are part of a module (ex: `Users::Admin`) (#234)
+
+## 2.0.1 (August 19, 2018)
+
+Bugfixes:
+  - Properly set timestamps of PaperTrail versions (#224, #225, #226)
+
+## 2.0.0 (June 12, 2018)
+
+Breaking changes:
+  - execute_after_commit was removed
+  - Removed workaround for incorrect counts when triggering updates from an `after_create` hook. Your options if this applies to you:
+    * continue using counter_culture 1.12.0
+    * upgrade to Rails 5.1.5 which fixes the underlying issue in Rails
+    * avoid triggering further updates on the same model in `after_create`; simply set the attribute in `before_create` instead
+
+Bugfixes:
+  - Multiple updates in one transaction will now be processed correctly (#222)
+
+## 1.12.0 (June 8, 2018)
+
+Improvements:
+  - Adds support for the [Discard](https://github.com/jhawthorn/discard) soft-delete gem (#220)
+
+## 1.11.0 (May 4, 2018)
+
+Bugfixes:
+  - Fix `with_papertrail` behavior while still addressing the deprecation warning, and actually recording the correct counts (#218, see [airblade/paper_trail#1076](https://github.com/airblade/paper_trail/issues/1076))
+
+## 1.10.1 (April 20, 2018)
+
+Improvements:
+  - Added the ability to update timestamps while fixing count by passing `touch: true` to `counter_culture_fix_counts` (#212)
+
+## 1.9.2 (April 13, 2018)
+
+Bugfixes:
+  - When using paranoia, call increment / decrement only once when calling destroy or restore on the same model multiple times
+
+Improvements:
+  - Address deprecation warning when enabling paper_trail touch in paper_trail version 9.0
+  - Address `Arel` deprecation warnings in Rails 5.2
+
+Changes:
+  - Test against Ruby 2.2 through 2.5, Rails 3.2 through 5.2
+  - Don't test Rails 3.2 through 4.1 against Ruby 2.4 or 2.5 as those versions of Rails will not work with those versions of Ruby
+  - Avoid various deprecation warnings being triggered in the test
+
+## 1.9.1 (March 1, 2018)
+
+Bugfixes:
+  - Address an edge-case test regression caused by Rails 5.1.5 that was causing counts to be off when saving changes from an `after_create` callback
+
+## 1.9.0 (November 29, 2017)
+
+Improvements:
+  - Switch generated migration files to use new hash syntax
+  - Support for Rails 5 migration file format for generated migrations
+
 ## 1.8.2 (September 27, 2017)
 
 Bugfixes:

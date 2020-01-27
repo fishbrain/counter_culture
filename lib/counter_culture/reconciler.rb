@@ -47,7 +47,7 @@ module CounterCulture
 
     def polymorphic_associated_model_classes
       foreign_type_field = relation_reflect(relation).foreign_type
-      model.pluck("DISTINCT #{foreign_type_field}").compact.map(&:constantize)
+      model.pluck(Arel.sql("DISTINCT #{foreign_type_field}")).compact.map(&:constantize)
     end
 
     def associated_model_class
@@ -67,6 +67,7 @@ module CounterCulture
       end
 
       def perform
+        log "Performing reconciling of #{counter.model}##{counter.relation.to_sentence}."
         # if we're provided a custom set of column names with conditions, use them; just use the
         # column name otherwise
         # which class does this relation ultimately point to? that's where we have to start
@@ -86,7 +87,12 @@ module CounterCulture
           relation_class_table_name = quote_table_name(relation_class.table_name)
 
           # select join column and count (from above) as well as cache column ('column_name') for later comparison
-          counts_query = scope.select("#{relation_class_table_name}.#{relation_class.primary_key}, #{relation_class_table_name}.#{relation_reflect(relation).association_primary_key(relation_class)}, #{count_select} AS count, #{relation_class_table_name}.#{column_name}")
+          counts_query = scope.select(
+            "#{relation_class_table_name}.#{relation_class.primary_key}, " \
+            "#{relation_class_table_name}.#{relation_reflect(relation).association_primary_key(relation_class)}, " \
+            "#{count_select} AS count, " \
+            "MAX(#{relation_class_table_name}.#{column_name}) AS #{column_name}"
+          )
 
           # we need to join together tables until we get back to the table this class itself lives in
           join_clauses(where).each do |join|
@@ -97,16 +103,22 @@ module CounterCulture
           # instances and we try to load all their counts at once
           batch_size = options.fetch(:batch_size, CounterCulture.config.batch_size)
 
+          counts_query = counts_query.where(options[:where])
+
           counts_query.group(full_primary_key(relation_class)).find_in_batches(batch_size: batch_size) do |records|
             # now iterate over all the models and see whether their counts are right
             update_count_for_batch(column_name, records)
           end
         end
+        log_without_newline "\n"
+        log "Finished reconciling of #{counter.model}##{counter.relation.to_sentence}."
       end
 
       private
 
       def update_count_for_batch(column_name, records)
+        log_without_newline "."
+
         ActiveRecord::Base.transaction do
           records.each do |record|
             count = record.read_attribute('count') || 0
@@ -114,10 +126,42 @@ module CounterCulture
 
             track_change(record, column_name, count)
 
-            # use update_all because it's faster and because a fixed counter-cache shouldn't update the timestamp
-            relation_class.where(relation_class.primary_key => record.send(relation_class.primary_key)).update_all(column_name => count)
+            updates = []
+            # this updates the actual counter
+            updates << "#{column_name} = #{count}"
+            # and here we update the timestamp, if so desired
+            if options[:touch]
+              current_time = record.send(:current_time_from_proper_timezone)
+              timestamp_columns = record.send(:timestamp_attributes_for_update_in_model)
+              if options[:touch] != true
+                # starting in Rails 6 this is frozen
+                timestamp_columns = timestamp_columns.dup
+                timestamp_columns << options[:touch]
+              end
+              timestamp_columns.each do |timestamp_column|
+                updates << "#{timestamp_column} = '#{current_time.to_formatted_s(:db)}'"
+              end
+            end
+
+            relation_class.where(relation_class.primary_key => record.send(relation_class.primary_key)).update_all(updates.join(', '))
           end
         end
+      end
+
+      def log(message)
+        return unless log?
+
+        Rails.logger.info(message)
+      end
+
+      def log_without_newline(message)
+        return unless log?
+
+        Rails.logger << message if Rails.logger.info?
+      end
+
+      def log?
+        options[:verbose] && Rails.logger
       end
 
       # keep track of what we fixed, e.g. for a notification email
@@ -222,6 +266,14 @@ module CounterCulture
             # respect the deleted_at column if it exists
             if model.column_names.include?('deleted_at')
               joins_sql += " AND #{target_table_alias}.deleted_at IS NULL"
+            end
+
+            # respect the discard column if it exists
+            if defined?(Discard::Model) &&
+               model.include?(Discard::Model) &&
+               model.column_names.include?(model.discard_column.to_s)
+
+              joins_sql += " AND #{target_table_alias}.#{model.discard_column} IS NULL"
             end
           end
           joins_sql

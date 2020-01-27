@@ -1,4 +1,4 @@
-require File.expand_path(File.dirname(__FILE__) + '/spec_helper')
+require_relative 'spec_helper'
 
 require 'models/company'
 require 'models/industry'
@@ -9,6 +9,7 @@ require 'models/twitter_review'
 require 'models/user'
 require 'models/category'
 require 'models/has_string_id'
+require 'models/has_non_pk_id'
 require 'models/simple_main'
 require 'models/simple_dependent'
 require 'models/conditional_main'
@@ -21,15 +22,18 @@ require 'models/another_post'
 require 'models/another_post_comment'
 require 'models/person'
 require 'models/transaction'
-require 'models/soft_delete'
+require 'models/soft_delete_discard'
+require 'models/soft_delete_paranoia'
 require 'models/conversation'
 require 'models/candidate_profile'
 require 'models/candidate'
+require 'models/with_module/model1'
+require 'models/with_module/model2'
 
 require 'database_cleaner'
 DatabaseCleaner.strategy = :deletion
 
-describe "CounterCulture" do
+RSpec.describe "CounterCulture" do
   before(:each) do
     DatabaseCleaner.clean
   end
@@ -145,6 +149,34 @@ describe "CounterCulture" do
 
     review.update_attribute(:approvals, 69)
     expect(user2.reload.review_approvals_count).to eq(69)
+  end
+
+  it "works with multiple saves in one transcation" do
+    user = User.create
+    product = Product.create
+
+    expect(user.reviews_count).to eq(0)
+    expect(user.review_approvals_count).to eq(0)
+
+    Review.transaction do
+      review1 = Review.create!(user_id: user.id, product_id: product.id, approvals: 0)
+
+      user.reload
+      expect(user.reviews_count).to eq(1)
+      expect(user.review_approvals_count).to eq(0)
+
+      review1.update!(approvals: 42)
+
+      user.reload
+      expect(user.reviews_count).to eq(1)
+      expect(user.review_approvals_count).to eq(42)
+
+      review2 = Review.create!(user_id: user.id, product_id: product.id, approvals: 1)
+
+      user.reload
+      expect(user.reviews_count).to eq(2)
+      expect(user.review_approvals_count).to eq(43)
+    end
   end
 
   it "treats null delta column values as 0" do
@@ -465,7 +497,12 @@ describe "CounterCulture" do
         expect(user.using_count).to eq(0)
         expect(user.tried_count).to eq(0)
 
-        review = Review.create :user_id => user.id, :product_id => product.id, :review_type => "using"
+        review = Review.create(
+          user_id: user.id,
+          product_id: product.id,
+          review_type: 'using'
+        )
+
         user.reload
 
         expect(user.using_count).to eq(1)
@@ -948,6 +985,63 @@ describe "CounterCulture" do
     expect(Review.counter_culture_fix_counts(skip_unsupported: true)).to eq([{ entity: 'User', id: user1.id, what: 'reviews_count', right: 1, wrong: 2 }])
   end
 
+  it 'should update the timestamp when fixing counts with `touch: true`' do
+    product = Product.create
+    review = Review.create product: product
+
+    product.update_column :reviews_count, 2
+
+    product.reload
+
+    old_product_updated_at = product.updated_at
+
+    Timecop.travel(1.second.from_now) do
+      Review.counter_culture_fix_counts(skip_unsupported: true, only: :product, touch: true)
+
+      product.reload
+
+      expect(product.updated_at).to be > old_product_updated_at
+    end
+  end
+
+  it 'should not update the timestamp when fixing counts without `touch: true`' do
+    product = Product.create
+    review = Review.create product: product
+
+    product.update_column :reviews_count, 2
+
+    product.reload
+
+    old_product_updated_at = product.updated_at
+
+    Timecop.travel(2.second.from_now) do
+      Review.counter_culture_fix_counts(skip_unsupported: true, only: :product)
+
+      product.reload
+
+      expect(product.updated_at).to eq old_product_updated_at
+    end
+  end
+
+  it 'should update the timestamp of a custom column when fixing counts with touch: rexiews_updated_at' do
+    product = Product.create
+    review = Review.create product: product
+
+    product.update_column :rexiews_count, 2
+
+    product.reload
+
+    old_rexiews_updated_at = product.rexiews_updated_at
+
+    Timecop.travel(1.second.from_now) do
+      Review.counter_culture_fix_counts(skip_unsupported: true, touch: :rexiews_updated_at)
+
+      product.reload
+
+      expect(product.rexiews_updated_at).to be > old_rexiews_updated_at
+    end
+  end
+
   it "should fix a simple counter cache correctly" do
     user = User.create
     product = Product.create
@@ -1184,6 +1278,31 @@ describe "CounterCulture" do
     expect(string_id.users_count).to eq(2)
   end
 
+  it "should fix a counter cache with no DB-level primary_key index correctly" do
+    non_pk_id = HasNonPkId.create(id: (HasNonPkId.maximum(:id) || 1) + 1)
+
+    user = User.create(has_non_pk_id_id: non_pk_id.id)
+
+    non_pk_id.reload
+    expect(non_pk_id.users_count).to eq(1)
+
+    user2 = User.create(has_non_pk_id_id: non_pk_id.id)
+
+    non_pk_id.reload
+    expect(non_pk_id.users_count).to eq(2)
+
+    non_pk_id.users_count = 123
+    non_pk_id.save!
+
+    non_pk_id.reload
+    expect(non_pk_id.users_count).to eq(123)
+
+    User.counter_culture_fix_counts
+
+    non_pk_id.reload
+    expect(non_pk_id.users_count).to eq(2)
+  end
+
   it "should fix a static delta magnitude column correctly" do
     user = User.create
     product = Product.create
@@ -1197,7 +1316,7 @@ describe "CounterCulture" do
     user.reload
     expect(user.custom_delta_count).to eq(3)
 
-    user.update_attributes(:custom_delta_count => 5)
+    user.update(:custom_delta_count => 5)
 
     Review.counter_culture_fix_counts(:skip_unsupported => true)
 
@@ -1231,8 +1350,6 @@ describe "CounterCulture" do
   end
 
   it "should work correctly with string keys" do
-    skip("Unsupported in this version of Rails") if Rails.version < "4.0.0"
-
     string_id = HasStringId.create(id: "1")
     string_id2 = HasStringId.create(id: "abc")
 
@@ -1271,6 +1388,32 @@ describe "CounterCulture" do
     expect { Category.counter_culture_fix_counts }.to raise_error "No counter cache defined on Category"
   end
 
+  it "should log if verbose option is true" do
+    logger = Rails.logger
+    io = StringIO.new
+    io_logger = Logger.new(io)
+    Rails.logger = io_logger
+
+    # first, clean up
+    SimpleDependent.delete_all
+    SimpleMain.delete_all
+
+    2.times do
+      main = SimpleMain.create
+      3.times { main.simple_dependents.create }
+    end
+
+    SimpleDependent.counter_culture_fix_counts :batch_size => 1, verbose: true
+
+    expect(io.string).to include(
+      "Performing reconciling of SimpleDependent#simple_main.")
+    expect(io.string).to include(
+      "..")
+    expect(io.string).to include(
+      "Finished reconciling of SimpleDependent#simple_main.")
+    Rails.logger = logger
+  end
+
   MANY = CI_TEST_RUN ? 1000 : 20
   A_FEW = CI_TEST_RUN ? 50:  10
   A_BATCH = CI_TEST_RUN ? 100: 10
@@ -1290,6 +1433,19 @@ describe "CounterCulture" do
     SimpleDependent.counter_culture_fix_counts :batch_size => A_BATCH
   end
 
+  it "should correctly fix the counter caches with conditionals" do
+    updated = SimpleMain.create
+    updated.simple_dependents.create
+    not_updated = SimpleMain.create
+    not_updated.simple_dependents.create
+    SimpleMain.all.update_all simple_dependents_count: 3
+
+    SimpleDependent.counter_culture_fix_counts only: :simple_main, where: { simple_mains: { id: updated.id } }
+
+    expect(updated.reload.simple_dependents_count).to eq(1)
+    expect(not_updated.reload.simple_dependents_count).to eq(3)
+  end
+
   it "should correctly fix the counter caches with thousands of records" do
     # first, clean up
     SimpleDependent.delete_all
@@ -1302,7 +1458,7 @@ describe "CounterCulture" do
 
     SimpleMain.find_each { |main| expect(main.simple_dependents_count).to eq(3) }
 
-    SimpleMain.order('random()').limit(A_FEW).update_all simple_dependents_count: 1
+    SimpleMain.order(db_random).limit(A_FEW).update_all simple_dependents_count: 1
     SimpleDependent.counter_culture_fix_counts :batch_size => A_BATCH
 
     SimpleMain.find_each { |main| expect(main.simple_dependents_count).to eq(3) }
@@ -1320,7 +1476,7 @@ describe "CounterCulture" do
 
     ConditionalMain.find_each { |main| expect(main.conditional_dependents_count).to eq(main.id % 2 == 0 ? 3 : 0) }
 
-    ConditionalMain.order('random()').limit(A_FEW).update_all :conditional_dependents_count => 1
+    ConditionalMain.order(db_random).limit(A_FEW).update_all :conditional_dependents_count => 1
     ConditionalDependent.counter_culture_fix_counts :batch_size => A_BATCH
 
     ConditionalMain.find_each { |main| expect(main.conditional_dependents_count).to eq(main.id % 2 == 0 ? 3 : 0) }
@@ -1338,7 +1494,7 @@ describe "CounterCulture" do
 
     SimpleMain.find_each { |main| expect(main.simple_dependents_count).to eq(main.id % 4) }
 
-    SimpleMain.order('random()').limit(A_FEW).update_all simple_dependents_count: 1
+    SimpleMain.order(db_random).limit(A_FEW).update_all simple_dependents_count: 1
     SimpleDependent.counter_culture_fix_counts :batch_size => A_BATCH
 
     SimpleMain.find_each { |main| expect(main.simple_dependents_count).to eq(main.id % 4) }
@@ -1450,16 +1606,20 @@ describe "CounterCulture" do
   end
 
   it "should use relation primary_key correctly" do
-    subcateg = Subcateg.create :subcat_id => Subcateg::SUBCAT_1
+    subcateg = Subcateg.create!
+    subcateg.update(subcat_id: Subcateg::SUBCAT_1)
+
     post = Post.new
     post.subcateg = subcateg
     post.save!
+
     subcateg.reload
     expect(subcateg.posts_count).to eq(1)
   end
 
   it "should use relation primary key on counter destination table correctly when fixing counts" do
-    subcateg = Subcateg.create :subcat_id => Subcateg::SUBCAT_1
+    subcateg = Subcateg.create!
+    subcateg.update(subcat_id: Subcateg::SUBCAT_1)
     post = Post.new
     post.subcateg = subcateg
     post.save!
@@ -1474,9 +1634,8 @@ describe "CounterCulture" do
   end
 
   it "should use primary key on counted records table correctly when fixing counts" do
-    skip("Unsupported in this version of Rails") if Rails.version < "4.0.0"
-
-    subcateg = Subcateg.create :subcat_id => Subcateg::SUBCAT_1
+    subcateg = Subcateg.create!
+    subcateg.update(subcat_id: Subcateg::SUBCAT_1)
     post = Post.new
     post.subcateg = subcateg
     post.save!
@@ -1492,19 +1651,18 @@ describe "CounterCulture" do
   end
 
   it "should use multi-level relation primary key on counter destination table correctly when fixing counts" do
-    skip("Unsupported in this version of Rails") if Rails.version < "4.0.0"
+    categ = Categ.create!
+    categ.update(cat_id: Categ::CAT_1)
 
-    categ = Categ.create :cat_id => Categ::CAT_1
-    subcateg = Subcateg.new :subcat_id => Subcateg::SUBCAT_1
-    subcateg.categ = categ
-    subcateg.save!
+    subcateg = Subcateg.create!
+    subcateg.update(
+      subcat_id: Subcateg::SUBCAT_1,
+      categ: categ
+    )
 
-    post = Post.new
-    post.subcateg = subcateg
-    post.save!
+    Post.create!(subcateg: subcateg)
 
-    categ.posts_count = -1
-    categ.save!
+    categ.update(posts_count: -1)
 
     fixed = Post.counter_culture_fix_counts :only => [[:subcateg, :categ]]
 
@@ -1642,25 +1800,215 @@ describe "CounterCulture" do
     end
   end
 
-  describe "when using acts_as_paranoia" do
+  describe "when using discard for soft deletes" do
     it "works" do
       company = Company.create!
-      expect(company.soft_deletes_count).to eq(0)
-      sd = SoftDelete.create!(company_id: company.id)
-      expect(company.reload.soft_deletes_count).to eq(1)
+      expect(company.soft_delete_discards_count).to eq(0)
+      sd = SoftDeleteDiscard.create!(company_id: company.id)
+      expect(company.reload.soft_delete_discards_count).to eq(1)
+
+      sd.discard
+      sd.reload
+      expect(sd).to be_discarded
+      expect(company.reload.soft_delete_discards_count).to eq(0)
+
+      company.update(soft_delete_discards_count: 100)
+      expect(company.reload.soft_delete_discards_count).to eq(100)
+      SoftDeleteDiscard.counter_culture_fix_counts
+      expect(company.reload.soft_delete_discards_count).to eq(0)
+
+      sd.undiscard
+      expect(company.reload.soft_delete_discards_count).to eq(1)
+    end
+
+    it "runs destroy callback only once" do
+
+      company = Company.create!
+      sd = SoftDeleteDiscard.create!(company_id: company.id)
+
+      expect(company.reload.soft_delete_discards_count).to eq(1)
+
+      sd.discard
+      expect(company.reload.soft_delete_discards_count).to eq(0)
+
+      sd.discard
+      expect(company.reload.soft_delete_discards_count).to eq(0)
+    end
+
+    it "runs restore callback only once" do
+      company = Company.create!
+      sd = SoftDeleteDiscard.create!(company_id: company.id)
+
+      expect(company.reload.soft_delete_discards_count).to eq(1)
+
+      sd.discard
+      expect(company.reload.soft_delete_discards_count).to eq(0)
+
+      sd.undiscard
+      expect(company.reload.soft_delete_discards_count).to eq(1)
+
+      sd.undiscard
+      expect(company.reload.soft_delete_discards_count).to eq(1)
+    end
+
+    describe "when calling hard-destroy" do
+      it "does not run destroy callback for discarded records" do
+        company = Company.create!
+        sd = SoftDeleteDiscard.create!(company_id: company.id)
+
+        expect(company.reload.soft_delete_discards_count).to eq(1)
+
+        sd.discard
+        expect(company.reload.soft_delete_discards_count).to eq(0)
+
+        sd.destroy
+        expect(company.reload.soft_delete_discards_count).to eq(0)
+      end
+
+      it "runs destroy callback for undiscarded records" do
+        company = Company.create!
+        sd = SoftDeleteDiscard.create!(company_id: company.id)
+
+        expect(company.reload.soft_delete_discards_count).to eq(1)
+
+        sd.destroy
+        expect(company.reload.soft_delete_discards_count).to eq(0)
+      end
+    end
+
+    describe "dynamic column names with totaling instead of counting" do
+      describe 'when updating discarded records' do
+        it 'does not update sum' do
+          company = Company.create!
+          sd = SoftDeleteDiscard.create!(company_id: company.id, value: 5)
+
+          expect(company.reload.soft_delete_discard_values_sum).to eq(5)
+
+          sd.discard
+          expect(company.reload.soft_delete_discard_values_sum).to eq(0)
+
+          sd.update value: 10
+          expect(company.reload.soft_delete_discard_values_sum).to eq(0)
+        end
+      end
+
+      describe 'when updating undiscarded records' do
+        it 'updates sum' do
+          company = Company.create!
+          sd = SoftDeleteDiscard.create!(company_id: company.id, value: 5)
+
+          expect(company.reload.soft_delete_discard_values_sum).to eq(5)
+
+          sd.update value: 10
+          expect(company.reload.soft_delete_discard_values_sum).to eq(10)
+        end
+      end
+    end
+  end
+
+  describe "when using paranoia for soft deletes" do
+    it "works" do
+      company = Company.create!
+      expect(company.soft_delete_paranoia_count).to eq(0)
+      sd = SoftDeleteParanoia.create!(company_id: company.id)
+      expect(company.reload.soft_delete_paranoia_count).to eq(1)
 
       sd.destroy
       sd.reload
       expect(sd.deleted_at).to be_truthy
-      expect(company.reload.soft_deletes_count).to eq(0)
+      expect(company.reload.soft_delete_paranoia_count).to eq(0)
 
-      company.update_attributes(soft_deletes_count: 100)
-      expect(company.reload.soft_deletes_count).to eq(100)
-      SoftDelete.counter_culture_fix_counts
-      expect(company.reload.soft_deletes_count).to eq(0)
+      company.update(soft_delete_paranoia_count: 100)
+      expect(company.reload.soft_delete_paranoia_count).to eq(100)
+      SoftDeleteParanoia.counter_culture_fix_counts
+      expect(company.reload.soft_delete_paranoia_count).to eq(0)
 
       sd.restore
-      expect(company.reload.soft_deletes_count).to eq(1)
+      expect(company.reload.soft_delete_paranoia_count).to eq(1)
+    end
+
+    it "runs destroy callback only once" do
+      company = Company.create!
+      sd = SoftDeleteParanoia.create!(company_id: company.id)
+
+      expect(company.reload.soft_delete_paranoia_count).to eq(1)
+
+      sd.destroy
+      expect(company.reload.soft_delete_paranoia_count).to eq(0)
+
+      sd.destroy
+      expect(company.reload.soft_delete_paranoia_count).to eq(0)
+    end
+
+    it "runs restore callback only once" do
+      company = Company.create!
+      sd = SoftDeleteParanoia.create!(company_id: company.id)
+
+      expect(company.reload.soft_delete_paranoia_count).to eq(1)
+
+      sd.destroy
+      expect(company.reload.soft_delete_paranoia_count).to eq(0)
+
+      sd.restore
+      expect(company.reload.soft_delete_paranoia_count).to eq(1)
+
+      sd.restore
+      expect(company.reload.soft_delete_paranoia_count).to eq(1)
+    end
+
+    describe "when calling paranoia really destroy" do
+      it "does not run destroy callback for paranoia destroyed records" do
+        company = Company.create!
+        sd = SoftDeleteParanoia.create!(company_id: company.id)
+
+        expect(company.reload.soft_delete_paranoia_count).to eq(1)
+
+        sd.destroy
+        expect(company.reload.soft_delete_paranoia_count).to eq(0)
+
+        sd.really_destroy!
+        expect(company.reload.soft_delete_paranoia_count).to eq(0)
+      end
+
+      it "runs really destroy callback for paranoia undestroyed records" do
+        company = Company.create!
+        expect(company.soft_delete_paranoia_count).to eq(0)
+        sd = SoftDeleteParanoia.create!(company_id: company.id)
+        expect(company.reload.soft_delete_paranoia_count).to eq(1)
+
+        sd.really_destroy!
+        expect{ sd.reload }.to raise_error(ActiveRecord::RecordNotFound)
+        expect(company.reload.soft_delete_paranoia_count).to eq(0)
+      end
+    end
+
+    describe "dynamic column names with totaling instead of counting" do
+      describe 'when updating soft deleted records' do
+        it 'does not update sum' do
+          company = Company.create!
+          sd = SoftDeleteParanoia.create!(company_id: company.id, value: 5)
+
+          expect(company.reload.soft_delete_paranoia_values_sum).to eq(5)
+
+          sd.destroy
+          expect(company.reload.soft_delete_paranoia_values_sum).to eq(0)
+
+          sd.update value: 10
+          expect(company.reload.soft_delete_paranoia_values_sum).to eq(0)
+        end
+      end
+
+      describe 'when updating undestroyed records' do
+        it 'updates sum' do
+          company = Company.create!
+          sd = SoftDeleteParanoia.create!(company_id: company.id, value: 5)
+
+          expect(company.reload.soft_delete_paranoia_values_sum).to eq(5)
+
+          sd.update value: 10
+          expect(company.reload.soft_delete_paranoia_values_sum).to eq(10)
+        end
+      end
     end
   end
 
@@ -1825,13 +2173,13 @@ describe "CounterCulture" do
 
       it "can deal with changes to condition" do
         img1 = PolyImage.create(imageable: employee)
-        expect {img1.update_attributes!(url: special_url)}
+        expect {img1.update!(url: special_url)}
           .to change { employee.reload.special_poly_images_count }.from(0).to(1)
       end
 
       it "can deal with changes to condition" do
         img1 = PolyImage.create(imageable: employee, url: special_url)
-        expect {img1.update_attributes!(url: "normal url")}
+        expect {img1.update!(url: "normal url")}
           .to change { employee.reload.special_poly_images_count }.from(1).to(0)
       end
     end
@@ -1839,8 +2187,8 @@ describe "CounterCulture" do
 
   describe "with papertrail support", versioning: true do
     it "creates a papertrail version when changed" do
-      if Rails.version > "4.0.0" && Rails.version < "4.1.0"
-        skip("Unsupported in this version of Rails")
+      unless papertrail_supported_here?
+        skip("Unsupported in this combination of Ruby and Rails")
       end
 
       user = User.create
@@ -1855,11 +2203,54 @@ describe "CounterCulture" do
 
       expect(product.reviews_count).to eq(1)
       expect(product.versions.count).to eq(2)
+
+      attrs_from_versions = YAML.load(product.versions.reorder(:id).last.object)
+      # should be the value before the counter change
+      expect(attrs_from_versions['reviews_count']).to eq(0)
+
+      user.reviews.create :user_id => user.id, :product_id => product.id, :approvals => 13
+
+      product.reload
+
+      expect(product.reviews_count).to eq(2)
+      expect(product.versions.count).to eq(3)
+
+      attrs_from_versions = YAML.load(product.versions.reorder(:id).last.object)
+      # should be the value before the counter change
+      expect(attrs_from_versions['reviews_count']).to eq(1)
+    end
+
+    context "counter-cache model versioning" do
+      let!(:main_obj) { SimpleMain.create(created_at: 1.day.ago, updated_at: 1.day.ago) }
+
+      it "updates the updated_at of the parent variant" do
+        unless papertrail_supported_here?
+          skip("Unsupported in this combination of Ruby and Rails")
+        end
+
+        the_time = Time.now.utc
+        Timecop.freeze(the_time) do
+          main_obj.simple_dependents.create!
+          expect(main_obj.reload.updated_at.to_i).to eq(the_time.to_i)
+        end
+      end
+
+      it "sets the created_at time of the new version row to the current time" do
+        unless papertrail_supported_here?
+          skip("Unsupported in this combination of Ruby and Rails")
+        end
+
+        the_time = Time.now.utc
+        Timecop.freeze(the_time) do
+          main_obj.simple_dependents.create!
+          expect(main_obj.versions.last.created_at.to_i).to eq(the_time.to_i)
+        end
+      end
     end
 
     it "does not create a papertrail version when papertrail flag not set" do
-      if Rails.version > "4.0.0" && Rails.version < "4.1.0"
-        skip("Unsupported in this version of Rails")
+      unless papertrail_supported_here?
+        skip("Unsupported in this combination of Ruby and Rails")
       end
 
       user = User.create
@@ -1875,5 +2266,28 @@ describe "CounterCulture" do
       expect(user.reviews_count).to eq(1)
       expect(user.versions.count).to eq(1)
     end
+  end
+
+  describe "with a module for the model" do
+    it "works" do
+      model2 = WithModule::Model2.create!
+      5.times { WithModule::Model1.create!(model2: model2) }
+
+      model2.reload
+      expect(model2.model1s_count).to eq(5)
+
+      model2.update_column(:model1s_count, -1)
+
+      WithModule::Model1.counter_culture_fix_counts
+
+      model2.reload
+      expect(model2.model1s_count).to eq(5)
+    end
+  end
+
+  private
+  def papertrail_supported_here?
+    return false if Rails.version < "5.0.0"
+    true
   end
 end

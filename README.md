@@ -7,14 +7,20 @@ Turbo-charged counter caches for your Rails app. Huge improvements over the Rail
 * Supports dynamic column names, making it possible to split up the counter cache for different types of objects
 * Can keep a running count, or a running total
 
-Tested against Ruby 2.2.5 and 2.3.1 and against the latest patch releases of Rails 3.2, 4.0, 4.1, 4.2, 5.0 and 5.1.
+Tested against Ruby 2.3.8, 2.4.6, 2.5.5 and 2.6.2 and against the latest patch releases of Rails 4.2, 5.0, 5.1 and 5.2.
+
+Please note that -- unlike Rails' built-in counter-caches -- counter_culture does not currently change the behavior of the `.size` method on ActiveRecord associations. If you want to avoid a database query and read the cached value, please use the attribute name containing the counter cache directly.
+```
+product.categories.size  # => will lead to a SELECT COUNT(*) query
+product.categories_count # => will use counter cache without query
+```
 
 ## Installation
 
 Add counter_culture to your Gemfile:
 
 ```ruby
-gem 'counter_culture', '~> 1.8'
+gem 'counter_culture', '~> 2.0'
 ```
 
 Then run `bundle install`
@@ -39,6 +45,8 @@ If you are adding counter caches to existing data, you must add code to [manuall
 
 ### Simple counter-cache
 
+#### Has many association
+
 ```ruby
 class Product < ActiveRecord::Base
   belongs_to :category
@@ -51,6 +59,30 @@ end
 ```
 
 Now, the ```Category``` model will keep an up-to-date counter-cache in the ```products_count``` column of the ```categories``` table.
+
+#### Many to many association
+
+```ruby
+class User < ActiveRecord::Base
+  has_many :group_memberships
+  has_many :groups, through: :group_memberships
+end
+
+class Group < ActiveRecord::Base
+  has_many :group_memberships
+  has_many :members, through: :group_memberships, class: "User"
+end
+
+class Membership < ActiveRecord::Base
+  belongs_to :group
+  belongs_to :member, class: "User"
+  counter_culture :group, column_name: "members_count"
+  # If you'd like to also touch the group when `members_count` is updated
+  # counter_culture :group, column_name: "members_count", touch: true
+end
+```
+
+Now, the `Group` model will have an up to date count of its members in the `members_count` column
 
 ### Multi-level counter-cache
 
@@ -116,7 +148,7 @@ end
 ```ruby
 class Product < ActiveRecord::Base
   belongs_to :category
-  counter_culture :category, column_name: :weight, delta_magnitude: proc { model.product_type == 'awesome' ? 2 : 1 }
+  counter_culture :category, column_name: :weight, delta_magnitude: proc {|model| model.product_type == 'awesome' ? 2 : 1 }
 end
 
 class Category < ActiveRecord::Base
@@ -216,16 +248,6 @@ You may also specify a custom timestamp column that gets updated only when a par
 
 With this option, any time the `category_counter_cache` changes both the `category_count_changed` and `updated_at` columns will get updated.
 
-### Executing counter cache updates after commit
-
-By default, counter_culture will run counter cache updates inside of the same ActiveRecord transaction that triggered it. (Note that this bevavior [changed from version 0.2.3 to 1.0.0](CHANGELOG.md#100-november-15-2016).) If you would like to run counter cache updates outside of that transaction, for example because you are experiencing [deadlocks with older versions of PostgreSQL](http://mina.naguib.ca/blog/2010/11/22/postgresql-foreign-key-deadlocks.html), you can enable that behavior:
-```ruby
-  counter_culture :category, execute_after_commit: true
-```
-
-Please note that using `execute_after_commit` in conjunction with transactional
-fixtures will lead to your tests no longer seeing updated counter values.
-
 ### Manually populating counter cache values
 
 You will sometimes want to populate counter-cache values from primary data. This is required when adding counter-caches to existing data. It is also recommended to run this regularly (at BestVendor, we run it once a week) to catch any incorrect values in the counter caches.
@@ -247,6 +269,12 @@ Product.counter_culture_fix_counts only: [[:subcategory, :category]]
 # will automatically fix counts only on the two-level [:subcategory, :category] relation on Product
 
 # :except and :only also accept arrays
+
+Product.counter_culture_fix_counts verbose: true
+# prints some logs to STDOUT
+
+Product.counter_culture_fix_counts only: :category, where: { categories: { id: 1 } }
+# will automatically fix counts only on the :category with id 1 relation on Product
 ```
 
 The ```counter_culture_fix_counts``` counts method uses batch processing of records to keep the memory consumption low. The default batch size is 1000 but is configurable like so
@@ -272,6 +300,18 @@ Product.counter_culture_fix_counts batch_size: 100
 
 ```counter_culture_fix_counts``` is optimized to minimize the number of queries and runs very quickly.
 
+Similarly to `counter_culture`, it is possible to update the records' timestamps, when fixing counts. If you would like to update the default timestamp field, pass `touch: true` option:
+
+```ruby
+Product.counter_culture_fix_counts touch: true
+```
+
+If you have specified a custom timestamps column, pass its name as the value for the `touch` option:
+
+```ruby
+Product.counter_culture_fix_counts touch: category_count_changed
+```
+
 #### Handling dynamic column names
 
 Manually populating counter caches with dynamic column names requires additional configuration:
@@ -289,16 +329,28 @@ class Product < ActiveRecord::Base
 end
 ```
 
+If you would like to avoid this configuration and simply skip counter caches with
+dynamic column names, while still fixing those counters on the model that are not
+dynamic, you can pass `skip_unsupported`:
+
+```ruby
+Product.counter_culture_fix_counts skip_unsupported: true
+```
+
 #### Handling over-written, dynamic foreign keys
 
 Manually populating counter caches with dynamically over-written foreign keys (```:foreign_key_values``` option) is not supported. You will have to write code to handle this case yourself.
 
-### Soft-deletes / `paranoia` gem
+### Soft-deletes with `paranoia` or `discard`
 
-This gem will keep counters correctly updated when using the `paranoia` gem for
-soft-delete support. However, to ensure that counts are incremented after a
-restore you have to make sure that the call to `acts_as_paranoid` comes before
-the call to `counter_culture` in your model:
+This gem will keep counters correctly updated in Rails 4.2 or later when using
+[paranoia](https://github.com/rubysherpas/paranoia) or
+[discard](https://github.com/jhawthorn/discard) for soft-delete support.
+However, to ensure that counts are incremented after a restore you have
+to make sure to set up soft deletion (via `acts_as_paranoid` or
+`include Discard::Model`) before the call to `counter_culture` in your model:
+
+#### Paranoia
 
 ```ruby
 class SoftDelete < ActiveRecord::Base
@@ -306,6 +358,33 @@ class SoftDelete < ActiveRecord::Base
 
   belongs_to :company
   counter_culture :company
+end
+```
+
+#### Discard
+
+```ruby
+class SoftDelete < ActiveRecord::Base
+  include Discard::Model
+
+  belongs_to :company
+  counter_culture :company
+end
+```
+
+### PaperTrail integration
+
+If you are using the [`paper_trail` gem](https://github.com/airblade/paper_trail)
+and would like new versions to be created when the counter cache columns are
+changed by counter_culture, you can set the `with_papertrail` option:
+
+```ruby
+class Review < ActiveRecord::Base
+  counter_culture :product, with_papertrail: true
+end
+
+class Product < ActiveRecord::Base
+  has_paper_trail
 end
 ```
 

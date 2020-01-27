@@ -19,10 +19,28 @@ module CounterCulture
 
           # initialize callbacks only once
           after_create :_update_counts_after_create
-          after_destroy :_update_counts_after_destroy
-          after_update :_update_counts_after_update
-          if respond_to?(:after_restore)
-            after_restore :_update_counts_after_create
+
+          before_destroy :_update_counts_after_destroy, unless: :destroyed_for_counter_culture?
+
+          if respond_to?(:before_real_destroy) &&
+              instance_methods.include?(:paranoia_destroyed?)
+            before_real_destroy :_update_counts_after_destroy,
+              if: -> (model) { !model.paranoia_destroyed? }
+          end
+
+          after_update :_update_counts_after_update, unless: :destroyed_for_counter_culture?
+
+          if respond_to?(:before_restore)
+            before_restore :_update_counts_after_create,
+              if: -> (model) { model.deleted? }
+          end
+
+          if defined?(Discard::Model) && include?(Discard::Model)
+            before_discard :_update_counts_after_destroy,
+              if: ->(model) { !model.discarded? }
+
+            before_undiscard :_update_counts_after_create,
+              if: ->(model) { model.discarded? }
           end
 
           # we keep a list of all counter caches we must maintain
@@ -63,7 +81,7 @@ module CounterCulture
           next if options[:exclude] && options[:exclude].include?(counter.relation)
           next if options[:only] && !options[:only].include?(counter.relation)
 
-          reconciler = CounterCulture::Reconciler.new(counter, options.slice(:skip_unsupported, :batch_size))
+          reconciler = CounterCulture::Reconciler.new(counter, options.slice(:skip_unsupported, :batch_size, :touch, :where, :verbose))
           reconciler.reconcile!
           reconciler.changes
         end.compact
@@ -71,59 +89,50 @@ module CounterCulture
     end
 
     private
-    # need to make sure counter_culture is only activated once
-    # per commit; otherwise, if we do an update in an after_create,
-    # we would be triggered twice within the same transaction -- once
-    # for the create, once for the update
-    def _wrap_in_counter_culture_active(&block)
-      if @_counter_culture_active
-        # don't do anything; we are already active for this transaction
-      else
-        @_counter_culture_active = true
-        block.call
-        execute_after_commit { @_counter_culture_active = false}
-      end
-    end
-
     # called by after_create callback
     def _update_counts_after_create
-      _wrap_in_counter_culture_active do
-        self.class.after_commit_counter_cache.each do |counter|
-          # increment counter cache
-          counter.change_counter_cache(self, :increment => true)
-        end
+      self.class.after_commit_counter_cache.each do |counter|
+        # increment counter cache
+        counter.change_counter_cache(self, :increment => true)
       end
     end
 
     # called by after_destroy callback
     def _update_counts_after_destroy
-      _wrap_in_counter_culture_active do
-        self.class.after_commit_counter_cache.each do |counter|
-          # decrement counter cache
-          counter.change_counter_cache(self, :increment => false)
-        end
+      self.class.after_commit_counter_cache.each do |counter|
+        # decrement counter cache
+        counter.change_counter_cache(self, :increment => false)
       end
     end
 
     # called by after_update callback
     def _update_counts_after_update
-      _wrap_in_counter_culture_active do
-        self.class.after_commit_counter_cache.each do |counter|
-          # figure out whether the applicable counter cache changed (this can happen
-          # with dynamic column names)
-          counter_cache_name_was = counter.counter_cache_name_for(counter.previous_model(self))
-          counter_cache_name = counter.counter_cache_name_for(self)
+      self.class.after_commit_counter_cache.each do |counter|
+        # figure out whether the applicable counter cache changed (this can happen
+        # with dynamic column names)
+        counter_cache_name_was = counter.counter_cache_name_for(counter.previous_model(self))
+        counter_cache_name = counter.counter_cache_name_for(self)
 
-          if counter.first_level_relation_changed?(self) ||
-              (counter.delta_column && counter.attribute_changed?(self, counter.delta_column)) ||
-              counter_cache_name != counter_cache_name_was
+        if counter.first_level_relation_changed?(self) ||
+            (counter.delta_column && counter.attribute_changed?(self, counter.delta_column)) ||
+            counter_cache_name != counter_cache_name_was
 
-            # increment the counter cache of the new value
-            counter.change_counter_cache(self, :increment => true, :counter_column => counter_cache_name)
-            # decrement the counter cache of the old value
-            counter.change_counter_cache(self, :increment => false, :was => true, :counter_column => counter_cache_name_was)
-          end
+          # increment the counter cache of the new value
+          counter.change_counter_cache(self, :increment => true, :counter_column => counter_cache_name)
+          # decrement the counter cache of the old value
+          counter.change_counter_cache(self, :increment => false, :was => true, :counter_column => counter_cache_name_was)
         end
+      end
+    end
+
+    # check if record is soft-deleted
+    def destroyed_for_counter_culture?
+      if respond_to?(:paranoia_destroyed?)
+        paranoia_destroyed?
+      elsif defined?(Discard::Model) && self.class.include?(Discard::Model)
+        discarded?
+      else
+        false
       end
     end
 
