@@ -9,7 +9,7 @@ module CounterCulture
 
     attr_reader :counter, :options, :changes
 
-    delegate :model, :relation, :full_primary_key, :relation_reflect, :polymorphic?, :to => :counter
+    delegate :model, :relation, :full_primary_key, :relation_reflect, :polymorphic?, :extra_join, :to => :counter
     delegate *CounterCulture::Counter::CONFIG_OPTIONS, :to => :counter
 
     def initialize(counter, options={})
@@ -285,6 +285,10 @@ module CounterCulture
             joins_sql += " AND #{target_table_alias}.#{reflect.foreign_type} = '#{relation_class.name}'"
           end
           if index == reverse_relation.size - 1
+
+            # adds extra join to the main query
+            joins_sql += " #{extra_join}" if extra_join
+
             # conditions must be applied to the join on which we are counting
             if where
               if where.respond_to?(:to_sql)
